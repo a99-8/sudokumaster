@@ -82,6 +82,40 @@ export function toggleQuickNotes(state: Snapshot): Snapshot {
   const clear = state.notes.some(list => list.length > 0);
   return { board: [...state.board], notes: state.board.map((_,i) => clear ? [] : candidates(state.board,i)) };
 }
+export type HintInfo = { index: number; digit: number; technique: string; detail: string };
+function unitsOf(index: number): { name: string; cells: number[] }[] {
+  const r = Math.floor(index / 9), c = index % 9;
+  const br = Math.floor(r / 3) * 3, bc = Math.floor(c / 3) * 3;
+  return [
+    { name: `الصف ${rowLetters[r]}`, cells: Array.from({ length: 9 }, (_, k) => r * 9 + k) },
+    { name: `العمود ${c + 1}`, cells: Array.from({ length: 9 }, (_, k) => k * 9 + c) },
+    { name: `المربع ${Math.floor(r / 3) * 3 + Math.floor(c / 3) + 1}`, cells: Array.from({ length: 9 }, (_, k) => (br + Math.floor(k / 3)) * 9 + bc + k % 3) },
+  ];
+}
+export function findHint(board: number[], solution: number[], preferred = -1): HintInfo | null {
+  if (!solution.length) return null;
+  if (preferred >= 0 && board[preferred] && board[preferred] !== solution[preferred])
+    return { index: preferred, digit: solution[preferred], technique: "تصحيح إدخال خاطئ", detail: `الرقم المدخل في ${cellReference(preferred)} لا يطابق الحل؛ الصحيح هو ${solution[preferred]}.` };
+  const empty = board.flatMap((n, i) => n ? [] : [i]);
+  if (!empty.length) return null;
+  const order = preferred >= 0 && !board[preferred] ? [preferred, ...empty.filter(i => i !== preferred)] : empty;
+  for (const i of order)
+    for (const unit of unitsOf(i))
+      if (unit.cells.every(j => j === i || board[j]))
+        return { index: i, digit: solution[i], technique: "آخر خلية فارغة", detail: `${unit.name} لا يحتوي إلا على خلية فارغة واحدة، والرقم الناقص هو ${solution[i]}.` };
+  for (const i of order) {
+    const options = candidates(board, i);
+    if (options.length === 1)
+      return { index: i, digit: options[0], technique: "المرشح الوحيد", detail: `بعد استبعاد أرقام الصف والعمود والمربع، لا يتبقى لهذه الخلية إلا الرقم ${options[0]}.` };
+  }
+  for (const i of order)
+    for (const unit of unitsOf(i))
+      for (const d of candidates(board, i))
+        if (unit.cells.every(j => j === i || board[j] || !candidates(board, j).includes(d)))
+          return { index: i, digit: d, technique: "الوحيد المخفي", detail: `الرقم ${d} لا يمكن وضعه في ${unit.name} إلا في هذه الخلية.` };
+  const i = order[0];
+  return { index: i, digit: solution[i], technique: "تلميح من الحل", detail: "لم تكشف التقنيات الأساسية خطوة مباشرة هنا؛ هذا هو الرقم الصحيح لهذه الخلية." };
+}
 export type Exercise = { values: number[]; notes: number[][]; focus: number[]; target: number; digit: number; action: "place" | "remove"; steps: string[]; units: number[][]; reserved: number[]; variant: string };
 export function exercise(technique: number, stage: number): Exercise {
   const values = Array(81).fill(0) as number[];

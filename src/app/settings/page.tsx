@@ -1,16 +1,29 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import type { CSSProperties } from "react";
 import { accents, accentPalettes, basePalettes, themes } from "../palette";
 import { useTheme } from "../theme";
+import { usePrefs, type Prefs } from "../prefs";
+
+const playOptions: { key: keyof Prefs; title: string; description: string }[] = [
+  { key: "autoFinish", title: "الإكمال التلقائي", description: "عند بقاء 10 خطوات أو أقل حتى الحل، تُوضع الأرقام الصحيحة تلقائيًا في أماكنها وتُنهى الجولة." },
+  { key: "hardMode", title: "النمط الصعب", description: "ثلاثة أخطاء أو محاولات خاطئة تعيد المرحلة من البداية — في اللعبة وفي ساحة التدريب." },
+];
 
 export default function Settings() {
   const { theme, accent, setTheme, setAccent, storageAvailable } = useTheme();
+  const { prefs, update } = usePrefs();
   return <div className="app-shell">
-    <header className="site-header"><div className="header-inner"><Link className="brand" href="/" aria-label="سودوكو الرئيسية"><span className="brand-mark">9</span><span>سودوكو<span className="brand-accent">ماستر</span><small>SUDOKU MASTER</small></span></Link><nav aria-label="التنقل الرئيسي"><Link className="nav-item" href="/">العودة إلى اللعبة</Link><Link className="nav-item active" href="/settings" aria-current="page">الإعدادات</Link></nav></div></header>
+    <header className="site-header"><div className="header-inner"><Link className="brand" href="/" aria-label="سودوكو الرئيسية"><span className="brand-mark"><Image src="/icon.svg" alt="" width={46} height={46} priority/></span><span>سودوكو<span className="brand-accent">ماستر</span><small>SUDOKU MASTER</small></span></Link><nav aria-label="التنقل الرئيسي"><Link className="nav-item" href="/">العودة إلى اللعبة</Link><Link className="nav-item active" href="/settings" aria-current="page">الإعدادات</Link></nav></div></header>
     <main className="main-wrap settings-page">
       <section className="page-heading"><div><div className="eyebrow"><span/>مساحتك، على ذوقك</div><h1>اختر مظهرك. <span>واستمتع بالتركيز.</span></h1><p>ثمانية ألوان أساسية وثمانية ألوان ثانوية. نسّق الخلفية مع لون أدواتك دون فقدان لعبتك.</p></div></section>
+      <section className="settings-card" aria-labelledby="play-title"><div className="settings-section-heading"><div><h2 id="play-title">خيارات اللعب</h2><p>سلوك اللعبة أثناء الجولة. تُحفظ اختياراتك تلقائيًا على هذا الجهاز وتُطبّق فورًا.</p></div><span className="badge">{playOptions.length} خيارات</span></div>
+        <div className="pref-list">{playOptions.map(option => <button key={option.key} className={`pref-toggle ${prefs[option.key] ? "chosen" : ""}`} aria-pressed={prefs[option.key]} onClick={() => update({ [option.key]: !prefs[option.key] })}>
+          <span><strong>{option.title}</strong><small>{option.description}</small></span><span className="toggle-track" aria-hidden="true"><i/></span>
+        </button>)}</div>
+      </section>
       <section className="settings-card" aria-labelledby="theme-title"><div className="settings-section-heading"><div><h2 id="theme-title">اللون الأساسي</h2><p>لون الخلفيات والبطاقات واللوحة. الأنماط الداكنة تستخدم درجات أوضح للأرقام والمسودات والحدود.</p></div><span className="badge">8 أنماط</span></div>
         <div className="theme-options" role="group" aria-label="لون النمط الأساسي">{themes.map(value => {
           const base = basePalettes[value];

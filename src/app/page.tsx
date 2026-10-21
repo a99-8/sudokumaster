@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import techniques from "../../Technologies/Technologies.json";
-import { candidates, cellReference, digits, exercise, gameMove, initialBoard, newPuzzle, noteBlockers, peers, place, rowLetters, solve, toggleQuickNotes, type Difficulty, type Snapshot } from "./sudoku";
+import { cellReference, digits, exercise, findHint, gameMove, initialBoard, newPuzzle, noteBlockers, peers, place, rowLetters, solve, toggleQuickNotes, type Difficulty, type Snapshot } from "./sudoku";
+import { usePrefs } from "./prefs";
 
-type IconName = "grid" | "book" | "target" | "arrow" | "pencil" | "spark" | "undo" | "erase" | "bulb" | "clock" | "pause" | "play" | "check" | "close" | "chevron" | "sun";
+type IconName = "grid" | "book" | "target" | "arrow" | "pencil" | "spark" | "undo" | "erase" | "bulb" | "clock" | "pause" | "play" | "check" | "close" | "chevron" | "sun" | "expand" | "shrink";
 function Icon({ name, size = 22 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, ReactNode> = {
     grid: <><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></>,
@@ -24,6 +26,8 @@ function Icon({ name, size = 22 }: { name: IconName; size?: number }) {
     close: <path d="m6 6 12 12M6 18 18 6"/>,
     chevron: <path d="m14 6-6 6 6 6"/>,
     sun: <><circle cx="12" cy="12" r="4"/><path d="M12 1v2m0 18v2M1 12h2m18 0h2M4 4l2 2m12 12 2 2M4 20l2-2M18 6l2-2"/></>,
+    expand: <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>,
+    shrink: <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -34,6 +38,13 @@ function CoordinateBoard({ children, selected }: { children: ReactNode; selected
     <div className="row-labels" aria-hidden="true">{rowLetters.map((letter,i) => <span className={selected !== undefined && Math.floor(selected/9) === i ? "axis-active" : ""} key={letter}>{letter}</span>)}</div>
     <div className="coordinate-content">{children}</div>
   </div>;
+}
+function ExampleDiagram({ technique, wrong }: { technique: number; wrong?: boolean }) {
+  const ex = exercise(technique, 0);
+  return <div className="mini-board" dir="ltr" role="img" aria-label={wrong ? "لوحة توضح تطبيقًا غير صحيح" : "لوحة توضح تطبيقًا صحيحًا"}>{ex.values.map((v,i) => {
+    const target = i === ex.target;
+    return <span key={i} className={["mini-cell", ex.focus.includes(i) ? "training-focus" : "", target ? (wrong ? "mini-wrong" : "training-target") : "", i%9===2 || i%9===5 ? "box-right" : "", Math.floor(i/9)===2 || Math.floor(i/9)===5 ? "box-bottom" : ""].join(" ")}>{v || (wrong && target ? <b aria-hidden="true">✕</b> : <span className="mini-notes">{digits.map(d => <span key={d} className={target && !wrong && d === ex.digit ? "mini-highlight" : ""}>{ex.notes[i].includes(d) ? d : ""}</span>)}</span>)}</span>;
+  })}</div>;
 }
 const emptyNotes = () => Array.from({ length: 81 }, () => [] as number[]);
 const timeLabel = (s: number) => `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
@@ -71,6 +82,10 @@ export default function Home() {
   const [solvedStage, setSolvedStage] = useState(false);
   const [progress, setProgress] = useState<Record<string, number[]>>({});
   const [ready, setReady] = useState(false);
+  const { prefs } = usePrefs();
+  const [focusMode, setFocusMode] = useState(false);
+  const [endClosed, setEndClosed] = useState(false);
+  const [attempts, setAttempts] = useState(0);
   const complete = solution.length === 81 && state.board.every((n,i) => n === solution[i]);
   const filled = state.board.filter(Boolean).length;
   const currentExercise = training === null ? null : exercise(training, stage);
@@ -128,13 +143,45 @@ export default function Home() {
     return () => { document.removeEventListener("keydown", handleKey); document.body.style.overflow = overflow; previous?.focus(); };
   }, [dialog, detail]);
 
-  function commit(next: Snapshot) { setHistory(h => [...h, state].slice(-200)); setState(next); setNotice(""); setConflict(null); }
+  useEffect(() => {
+    const sync = () => { if (!document.fullscreenElement) setFocusMode(false); };
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+
+  async function toggleFocus() {
+    if (focusMode) {
+      try { if (document.fullscreenElement) await document.exitFullscreen(); } catch { /* fullscreen unsupported */ }
+      setFocusMode(false);
+    } else {
+      try { await document.documentElement.requestFullscreen(); } catch { /* fullscreen unsupported */ }
+      setFocusMode(true);
+      setView("game");
+    }
+  }
+
+  function commit(next: Snapshot) {
+    setHistory(h => [...h, state].slice(-200));
+    let finished = false;
+    if (prefs.autoFinish && solution.length) {
+      const remaining = next.board.reduce((count, n, i) => count + (n !== solution[i] ? 1 : 0), 0);
+      if (remaining > 0 && remaining <= 10) { next = { board: [...solution], notes: emptyNotes() }; finished = true; }
+    }
+    setState(next); setConflict(null);
+    setNotice(finished ? "الإكمال التلقائي: بقي 10 مواضع أو أقل، فوُضعت الأرقام الصحيحة في أماكنها." : "");
+  }
   function input(n: number) {
     if (paused || complete) return;
     setConflict(null);
     if (given[selected]) { setNotice("هذا رقم ثابت من اللغز، اختر خلية فارغة."); return; }
     const next = gameMove(state, given, solution, selected, n, pencil && n !== 0);
     if (next) {
+      if (next.mistake && prefs.hardMode && mistakes + 1 >= 3) {
+        setState({ board: [...given], notes: emptyNotes() }); setHistory([]); setMistakes(0); setSeconds(0); setConflict(null); setPaused(false);
+        setSelected(given.findIndex(v => !v));
+        setNotice("النمط الصعب: ثلاثة أخطاء تعيد المرحلة من البداية. حاول مجددًا بتركيز أعمق.");
+        return;
+      }
       commit(next.state);
       if (next.mistake) { setMistakes(count => count + 1); setNotice("الرقم لا يطابق الحل النهائي. يمكنك مسحه أو استبداله أو التراجع عنه. عدّاد الأخطاء تراكمي ولا ينقص بالتراجع."); }
     } else if (pencil && n !== 0) {
@@ -152,22 +199,26 @@ export default function Home() {
     setNotice(hasNotes ? "مُسحت جميع المسودات دون تغيير الأرقام. يمكنك استعادتها بالتراجع." : "أُضيفت جميع المرشحات القانونية. عدّلها بقلم الرصاص، أو اضغط مسح المسودات لإزالتها جميعًا.");
   }
   function hint() {
-    if (paused || complete) return;
-    if (!solution.length) return;
-    const index = !given[selected] && state.board[selected] !== solution[selected] ? selected : state.board.findIndex((n,i) => n !== solution[i]);
-    if (index < 0) return;
-    const possible = candidates(state.board, index);
-    const next = place(state, index, solution[index], false);
-    if (next) { commit(next); setSelected(index); setNotice(possible.length === 1 ? `مرشح وحيد في ${cellReference(index)}: الرقم ${solution[index]} هو الخيار القانوني الوحيد لهذه الخلية.` : `تلميح من حل اللغز للخلية ${cellReference(index)}: الرقم الصحيح هو ${solution[index]}. لا يعني ذلك أنه مرشح وحيد.`); }
+    if (paused || complete || !solution.length) return;
+    const info = findHint(state.board, solution, given[selected] ? -1 : selected);
+    if (!info) return;
+    const next = place(state, info.index, info.digit, false);
+    if (next) { commit(next); setSelected(info.index); setNotice(`${cellReference(info.index)} ← الرقم ${info.digit}. التقنية المستخدمة: «${info.technique}». ${info.detail}`); }
   }
-  function startGame() {
-    const board = newPuzzle(nextLevel);
-    setState({ board, notes: emptyNotes() }); setGiven(board); setHistory([]); setDifficulty(nextLevel); setSeconds(0); setMistakes(0); setSelected(board.findIndex(n => !n)); setPaused(false); setPencil(false); setDialog(false); setNotice(""); setConflict(null);
+  function startGame(level: Difficulty = nextLevel) {
+    const board = newPuzzle(level);
+    setState({ board, notes: emptyNotes() }); setGiven(board); setHistory([]); setDifficulty(level); setSeconds(0); setMistakes(0); setSelected(board.findIndex(n => !n)); setPaused(false); setPencil(false); setDialog(false); setNotice(""); setConflict(null); setEndClosed(false);
   }
-  function openTraining(i: number, s = 0) { setTraining(i); setStage(s); setStep(0); setSolvedStage(false); setTrainSelected(null); setNotice(""); setView("training"); }
+  function openTraining(i: number, s = 0) { setTraining(i); setStage(s); setStep(0); setSolvedStage(false); setTrainSelected(null); setAttempts(0); setNotice(""); setView("training"); }
   function answer(n: number) {
     if (!currentExercise || solvedStage || training === null) return;
-    if (trainSelected !== currentExercise.target || n !== currentExercise.digit) { setNotice("ليست هذه الخطوة المطلوبة. راجع الخلايا الملوّنة وشروط التقنية، أو اطلب خطوة توضيحية."); return; }
+    if (trainSelected !== currentExercise.target || n !== currentExercise.digit) {
+      const next = attempts + 1;
+      if (prefs.hardMode && next >= 3) { openTraining(training, stage); setNotice("النمط الصعب: ثلاث محاولات خاطئة — أُعيدت المرحلة من البداية."); return; }
+      setAttempts(next);
+      setNotice(prefs.hardMode ? `ليست هذه الخطوة المطلوبة. محاولات خاطئة: ${next}/3 — عند الثالثة تُعاد المرحلة.` : "ليست هذه الخطوة المطلوبة. راجع الخلايا الملوّنة وشروط التقنية، أو اطلب خطوة توضيحية.");
+      return;
+    }
     setSolvedStage(true); setNotice("أحسنت! طبّقت التقنية في الموضع الصحيح.");
     setProgress(p => ({ ...p, [training]: [...new Set([...(p[training] || []), stage])] }));
   }
@@ -175,10 +226,10 @@ export default function Home() {
   const totalProgress = Object.values(progress).reduce((sum, a) => sum + a.length, 0);
 
   return (
-    <div className="app-shell">
+    <div className={focusMode ? "app-shell focus-mode" : "app-shell"}>
       <header className="site-header">
         <div className="header-inner">
-          <button className="brand" onClick={() => setView("game")} aria-label="سودوكو الرئيسية"><span className="brand-mark"><Icon name="grid" size={27}/></span><span>سودوكو<span className="brand-accent">ماستر</span><small>SUDOKU MASTER</small></span></button>
+          <button className="brand" onClick={() => setView("game")} aria-label="سودوكو الرئيسية"><span className="brand-mark"><Image src="/icon.svg" alt="" width={46} height={46} priority/></span><span>سودوكو<span className="brand-accent">ماستر</span><small>SUDOKU MASTER</small></span></button>
           <nav aria-label="التنقل الرئيسي">
             <button className={view === "game" ? "nav-item active" : "nav-item"} onClick={() => { setView("game"); setNotice(""); }}><Icon name="grid" size={19}/>العب الآن</button>
             <button className={view === "learn" ? "nav-item active" : "nav-item"} onClick={() => { setView("learn"); setNotice(""); }}><Icon name="book" size={19}/>دليل التقنيات</button>
@@ -197,7 +248,7 @@ export default function Home() {
 
         {view === "game" && <div className="game-layout">
           <section className="game-panel">
-            <div className="game-topline"><div className="level-switch" aria-label="مستوى الصعوبة">{levels.map(l => <button key={l} className={difficulty === l ? "selected" : ""} onClick={() => { if (l !== difficulty) { setNextLevel(l); setDialog(true); } }}>{l}</button>)}</div><div className="game-counters"><span className="mistake-counter" aria-live="polite" title="إجمالي الإدخالات الخاطئة؛ لا ينقص بالتراجع">الأخطاء <strong>{mistakes}</strong></span><div className="timer"><Icon name="clock" size={17}/><span dir="ltr">{timeLabel(seconds)}</span><button className="icon-button" aria-label={paused ? "متابعة اللعبة" : "إيقاف مؤقت"} onClick={() => setPaused(v => !v)}><Icon name={paused ? "play" : "pause"} size={16}/></button></div></div></div>
+            <div className="game-topline"><div className="level-switch" aria-label="مستوى الصعوبة">{levels.map(l => <button key={l} className={difficulty === l ? "selected" : ""} onClick={() => { if (l !== difficulty) { setNextLevel(l); setDialog(true); } }}>{l}</button>)}</div><div className="game-counters"><span className="mistake-counter" aria-live="polite" title={prefs.hardMode ? "النمط الصعب: عند ثلاثة أخطاء تُعاد المرحلة" : "إجمالي الإدخالات الخاطئة؛ لا ينقص بالتراجع"}>الأخطاء <strong>{prefs.hardMode ? `${mistakes}/3` : mistakes}</strong></span><div className="timer"><Icon name="clock" size={17}/><span dir="ltr">{timeLabel(seconds)}</span><button className="icon-button" aria-label={paused ? "متابعة اللعبة" : "إيقاف مؤقت"} onClick={() => setPaused(v => !v)}><Icon name={paused ? "play" : "pause"} size={16}/></button></div><button className="icon-button focus-toggle" aria-label={focusMode ? "الخروج من وضع التركيز" : "وضع التركيز: تكبير لوحة اللعب"} aria-pressed={focusMode} title={focusMode ? "الخروج من وضع التركيز" : "وضع التركيز"} onClick={toggleFocus}><Icon name={focusMode ? "shrink" : "expand"} size={17}/></button></div></div>
             <CoordinateBoard selected={selected}><div className="board-container">
               <div className="sudoku-board" dir="ltr" role="group" aria-label="لوحة سودوكو" onKeyDown={e => {
                 if (/^[1-9]$/.test(e.key)) { e.preventDefault(); input(Number(e.key)); }
@@ -250,18 +301,18 @@ export default function Home() {
             const active = currentExercise.focus.includes(i) || target || v || currentExercise.notes[i].length;
             return <button key={i} aria-label={`صف ${rowLetters[Math.floor(i/9)]} عمود ${i%9+1} (${cellReference(i)})${target ? "، الهدف" : ""}، ${v ? `رقم ${v}` : `مرشحات ${currentExercise.notes[i].join("،")}`}`} disabled={!active || solvedStage} onClick={() => setTrainSelected(i)} className={["cell", !active ? "out-of-scope" : "", currentExercise.focus.includes(i) ? "training-focus" : "", target ? "training-target" : "", trainSelected === i ? "cell-selected" : "", i%9===2 || i%9===5 ? "box-right" : "", Math.floor(i/9)===2 || Math.floor(i/9)===5 ? "box-bottom" : ""].join(" ")}>{v || (solvedStage && target && currentExercise.action === "place" ? currentExercise.digit : <span className="notes-grid">{digits.map(n => <span className={solvedStage && target && n===currentExercise.digit ? "removed-note" : ""} key={n}>{currentExercise.notes[i].includes(n) ? n : ""}</span>)}</span>)}</button>;
           })}</div></CoordinateBoard><div className="board-legend"><span><i className="legend-focus"/>خلايا النمط</span><span><i className="legend-target"/>الخلية الهدف</span></div></section>
-          <aside className="game-sidebar"><section className="control-card training-controls"><span className="eyebrow">حان دورك</span><h2>{currentExercise.action === "place" ? "ما الرقم الذي يمكن تثبيته؟" : "أي مرشح يمكن استبعاده؟"}</h2><p>اختر الخلية الهدف ذات الإطار المنقّط، ثم اضغط الرقم {currentExercise.action === "place" ? "لتثبيته" : "لحذفه من مرشحاتها"}.</p><div className="compact-pad" dir="ltr">{digits.map(n => <button key={n} disabled={solvedStage} onClick={() => answer(n)}>{n}</button>)}</div><button className="hint-button" disabled={step>=3} onClick={() => setStep(s => Math.min(3,s+1))}><span><Icon name="bulb" size={19}/>أحتاج خطوة توضيحية</span><span>{step}/3</span></button><ol className="steps">{currentExercise.steps.slice(0,step).map((s,i) => <li key={i}>{s}</li>)}</ol>{solvedStage && <div className="success-box"><Icon name="check"/>تطبيق صحيح! {stage === 9 ? "أكملت المرحلة الأخيرة لهذه التقنية." : "مستعد للمرحلة التالية؟"}<button className="primary" onClick={() => stage < 9 ? openTraining(training,stage+1) : setTraining(null)}>{stage < 9 ? "المرحلة التالية" : "العودة للتدريبات"}<Icon name="arrow" size={17}/></button></div>}<button className="text-button" onClick={() => setDetail(training)}>راجع شرح التقنية</button></section><div className="stage-picker">{Array.from({length:10},(_,s) => <button aria-label={`المرحلة ${s+1}`} className={stage===s ? "current" : progress[training]?.includes(s) ? "done" : ""} key={s} onClick={() => openTraining(training,s)}>{s+1}</button>)}</div></aside></div>
+          <aside className="game-sidebar"><section className="control-card training-controls"><span className="eyebrow">حان دورك</span><h2>{currentExercise.action === "place" ? "ما الرقم الذي يمكن تثبيته؟" : "أي مرشح يمكن استبعاده؟"}</h2><p>اختر الخلية الهدف ذات الإطار المنقّط، ثم اضغط الرقم {currentExercise.action === "place" ? "لتثبيته" : "لحذفه من مرشحاتها"}.</p><div className="compact-pad" dir="ltr">{digits.map(n => <button key={n} disabled={solvedStage} onClick={() => answer(n)}>{n}</button>)}</div>{prefs.hardMode && <p className="hard-mode-note" role="status">النمط الصعب مفعّل: {attempts}/3 محاولات خاطئة — الثالثة تعيد المرحلة.</p>}<button className="hint-button" disabled={step>=3} onClick={() => setStep(s => Math.min(3,s+1))}><span><Icon name="bulb" size={19}/>أحتاج خطوة توضيحية</span><span>{step}/3</span></button><ol className="steps">{currentExercise.steps.slice(0,step).map((s,i) => <li key={i}>{s}</li>)}</ol>{solvedStage && <div className="success-box"><Icon name="check"/>تطبيق صحيح! {stage === 9 ? "أكملت المرحلة الأخيرة لهذه التقنية." : "مستعد للمرحلة التالية؟"}<button className="primary" onClick={() => stage < 9 ? openTraining(training,stage+1) : setTraining(null)}>{stage < 9 ? "المرحلة التالية" : "العودة للتدريبات"}<Icon name="arrow" size={17}/></button></div>}<button className="text-button" onClick={() => setDetail(training)}>راجع شرح التقنية</button></section><div className="stage-picker">{Array.from({length:10},(_,s) => <button aria-label={`المرحلة ${s+1}`} className={stage===s ? "current" : progress[training]?.includes(s) ? "done" : ""} key={s} onClick={() => openTraining(training,s)}>{s+1}</button>)}</div></aside></div>
         </>}
 
         {notice && <div className="notice" role="status"><Icon name="bulb" size={19}/><span>{notice}</span><button className="icon-button" onClick={() => { setNotice(""); setConflict(null); }} aria-label="إغلاق التنبيه"><Icon name="close" size={16}/></button></div>}
-        {view === "game" && complete && <div className="completion" role="status"><Icon name="check" size={30}/><h2>كل الأرقام وجدت مكانها!</h2><p>أكملت اللغز في {timeLabel(seconds)}. تحدٍ جديد بانتظارك.</p></div>}
+        {view === "game" && complete && !endClosed && <div className="modal-backdrop" onClick={() => setEndClosed(true)}><section role="dialog" aria-modal="true" aria-labelledby="end-title" className="modal end-modal" onClick={e => e.stopPropagation()}><button className="modal-close icon-button" aria-label="إغلاق" onClick={() => setEndClosed(true)}><Icon name="close"/></button><span className="round-icon"><Icon name="check" size={30}/></span><h2 id="end-title">كل الأرقام وجدت مكانها!</h2><p>أنهيت اللغز. إليك حصيلة جولتك:</p><div className="end-stats"><div><small>الوقت</small><strong dir="ltr">{timeLabel(seconds)}</strong></div><div><small>الأخطاء</small><strong>{mistakes}</strong></div><div><small>المستوى</small><strong>{difficulty}</strong></div></div><button className="primary" onClick={() => startGame(difficulty)}>إعادة اللعب <Icon name="arrow" size={18}/></button><button className="text-button" onClick={() => { setEndClosed(true); setNextLevel(difficulty); setDialog(true); }}>لعبة جديدة بمستوى آخر</button></section></div>}
 
         {view === "game" && <section className="learning-banner"><div className="banner-icon"><Icon name="book" size={28}/></div><div><span className="eyebrow">اللعب أجمل عندما تفهمه</span><h2>خطوتك التالية… أن تصبح أفضل.</h2><p>تعلّم 14 تقنية لحل سودوكو، وطبّقها في 140 مرحلة تدريبية.</p></div><button onClick={() => { setView("training"); setTraining(null); }}>اكتشف ساحة التدريب <Icon name="arrow" size={18}/></button><div className="banner-pattern" aria-hidden="true">1 2 3<br/>4 5 6<br/>7 8 9</div></section>}
-        <footer><span className="footer-brand"><Icon name="grid" size={16}/>سودوكو ماستر</span><span>صُمّم لشغفك بالتفكير. بدون تشتت.</span><span>المنطق أولًا، ثم الأرقام.</span></footer>
+        <footer><span className="footer-brand"><Icon name="grid" size={16}/>سودوكو ماستر</span><span>صُمّم لشغفك بالتفكير. بدون تشتت.</span><span>المنطق أولًا، ثم الأرقام.</span><span className="icon-credit">Sudoku Icon by Jeremiah on <a href="https://icon-icons.com/authors/602-jeremiah" target="_blank" rel="noopener noreferrer">Icon-Icons.com</a></span></footer>
       </main>
 
-      {dialog && <div className="modal-backdrop" onClick={() => setDialog(false)}><section role="dialog" aria-modal="true" aria-labelledby="new-game-title" className="modal" onClick={e => e.stopPropagation()}><button className="modal-close icon-button" aria-label="إغلاق" onClick={() => setDialog(false)}><Icon name="close"/></button><span className="round-icon"><Icon name="grid" size={30}/></span><h2 id="new-game-title">بداية جديدة، تحدٍ جديد</h2><p>اختر مساحة التحدي المناسبة لك. بدء لعبة جديدة يستبدل اللعبة الحالية وحركاتها.</p><div className="level-options">{levels.map((l,i) => <button className={nextLevel===l ? "selected" : ""} key={l} onClick={() => setNextLevel(l)}><strong>{l}</strong><small>{["بداية هادئة","تركيز أعمق","تحدٍ أكبر"][i]}</small></button>)}</div><p className="fine-print">الألغاز ذات حل وحيد. التصنيف هنا حسب عدد المعطيات، وليس تقييمًا مضمونًا لتعقيد تقنيات الحل.</p><button className="primary" onClick={startGame}>ابدأ اللعب <Icon name="arrow" size={18}/></button><button className="text-button" onClick={() => setDialog(false)}>العودة للغز الحالي</button></section></div>}
-      {detail !== null && <div className="modal-backdrop" onClick={() => setDetail(null)}><section role="dialog" aria-modal="true" aria-labelledby="technique-title" className="modal technique-modal" onClick={e => e.stopPropagation()}><button className="modal-close icon-button" onClick={() => setDetail(null)} aria-label="إغلاق"><Icon name="close"/></button><span className="badge">{techniques[detail].difficulty}</span><span className="english-name">{techniques[detail].name}</span><h2 id="technique-title">{techniques[detail].title}</h2><p>{techniques[detail].dis}</p><div className="example correct-example"><h3><Icon name="check" size={18}/>تطبيق صحيح</h3><p>{techniques[detail].correct}</p></div><div className="example incorrect-example"><h3><Icon name="close" size={18}/>تطبيق غير صحيح</h3><p>{techniques[detail].incorrect}</p></div><p className="fine-print">في تقنيات المرشحات، ابدأ بقائمة كاملة ولا تحذف أي مرشح دون سبب منطقي.</p><button className="primary" onClick={() => { openTraining(detail); setDetail(null); }}>جرّب التقنية · 10 مراحل <Icon name="arrow" size={18}/></button></section></div>}
+      {dialog && <div className="modal-backdrop" onClick={() => setDialog(false)}><section role="dialog" aria-modal="true" aria-labelledby="new-game-title" className="modal" onClick={e => e.stopPropagation()}><button className="modal-close icon-button" aria-label="إغلاق" onClick={() => setDialog(false)}><Icon name="close"/></button><span className="round-icon"><Icon name="grid" size={30}/></span><h2 id="new-game-title">بداية جديدة، تحدٍ جديد</h2><p>اختر مساحة التحدي المناسبة لك. بدء لعبة جديدة يستبدل اللعبة الحالية وحركاتها.</p><div className="level-options">{levels.map((l,i) => <button className={nextLevel===l ? "selected" : ""} key={l} onClick={() => setNextLevel(l)}><strong>{l}</strong><small>{["بداية هادئة","تركيز أعمق","تحدٍ أكبر"][i]}</small></button>)}</div><p className="fine-print">الألغاز ذات حل وحيد. التصنيف هنا حسب عدد المعطيات، وليس تقييمًا مضمونًا لتعقيد تقنيات الحل.</p><button className="primary" onClick={() => startGame()}>ابدأ اللعب <Icon name="arrow" size={18}/></button><button className="text-button" onClick={() => setDialog(false)}>العودة للغز الحالي</button></section></div>}
+      {detail !== null && <div className="modal-backdrop" onClick={() => setDetail(null)}><section role="dialog" aria-modal="true" aria-labelledby="technique-title" className="modal technique-modal" onClick={e => e.stopPropagation()}><button className="modal-close icon-button" onClick={() => setDetail(null)} aria-label="إغلاق"><Icon name="close"/></button><span className="badge">{techniques[detail].difficulty}</span><span className="english-name">{techniques[detail].name}</span><h2 id="technique-title">{techniques[detail].title}</h2><p>{techniques[detail].dis}</p><div className="example correct-example"><h3><Icon name="check" size={18}/>تطبيق صحيح</h3><ExampleDiagram technique={detail}/><p>{techniques[detail].correct}</p></div><div className="example incorrect-example"><h3><Icon name="close" size={18}/>تطبيق غير صحيح</h3><ExampleDiagram technique={detail} wrong/><p>{techniques[detail].incorrect}</p></div><p className="fine-print">في تقنيات المرشحات، ابدأ بقائمة كاملة ولا تحذف أي مرشح دون سبب منطقي.</p><button className="primary" onClick={() => { openTraining(detail); setDetail(null); }}>جرّب التقنية · 10 مراحل <Icon name="arrow" size={18}/></button></section></div>}
     </div>
   );
 }
